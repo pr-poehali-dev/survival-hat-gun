@@ -433,8 +433,7 @@ function drawHUD(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.fillText("ПАТРОНЫ КОНЧИЛИСЬ!",CANVAS_W/2,CANVAS_H/2-50); ctx.textAlign="left";
   }
 
-  ctx.fillStyle="rgba(255,255,255,0.25)"; ctx.font="10px Oswald,sans-serif";
-  ctx.fillText("WASD движение  ЛКМ стрелять  R перезарядка  ESC пауза",16,CANVAS_H-8);
+  // hints removed for mobile
 }
 
 export default function Index() {
@@ -666,9 +665,16 @@ export default function Index() {
     const mm=(e:MouseEvent)=>{mouseRef.current.x=e.clientX;mouseRef.current.y=e.clientY;};
     const md=(e:MouseEvent)=>{if(e.button===0)mouseRef.current.down=true;};
     const mu=(e:MouseEvent)=>{if(e.button===0)mouseRef.current.down=false;};
+    const tp=(e:TouchEvent)=>e.preventDefault();
     canvas.addEventListener("mousemove",mm); canvas.addEventListener("mousedown",md); canvas.addEventListener("mouseup",mu);
+    canvas.addEventListener("touchstart",tp,{passive:false});
+    canvas.addEventListener("touchmove",tp,{passive:false});
     window.addEventListener("mousemove",mm);
-    return()=>{canvas.removeEventListener("mousemove",mm);canvas.removeEventListener("mousedown",md);canvas.removeEventListener("mouseup",mu);window.removeEventListener("mousemove",mm);};
+    return()=>{
+      canvas.removeEventListener("mousemove",mm);canvas.removeEventListener("mousedown",md);canvas.removeEventListener("mouseup",mu);
+      canvas.removeEventListener("touchstart",tp);canvas.removeEventListener("touchmove",tp);
+      window.removeEventListener("mousemove",mm);
+    };
   },[screen]);
 
   const resume=useCallback(()=>{
@@ -752,39 +758,135 @@ export default function Index() {
   );
 
   if(screen==="game"||screen==="pause") return (
-    <div style={{...bgStyle,background:"#0a0a18"}}>
-      <div style={{position:"relative",width:"min(100vw,800px)",aspectRatio:"800/500"}}>
-        <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H}
-          style={{width:"100%",height:"100%",display:"block",cursor:"crosshair"}}/>
-        {screen==="pause"&&(
-          <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.78)",fontFamily:"'Oswald',sans-serif"}}>
-            <div style={{color:"#FFD54F",fontSize:52,fontWeight:900,letterSpacing:8,marginBottom:28,textShadow:"0 0 30px rgba(255,213,79,0.5)"}}>ПАУЗА</div>
-            <div style={{display:"flex",flexDirection:"column",gap:10,width:220}}>
-              <button style={btnPrimary} onClick={resume}>▶ ПРОДОЛЖИТЬ</button>
-              <button style={{...btnPrimary,background:"rgba(255,255,255,0.07)",color:"#ccc",border:"2px solid #333",boxShadow:"none"}} onClick={()=>{setScreen("hat_select");cancelAnimationFrame(rafRef.current);}}>🎩 СМЕНИТЬ ШЛЯПУ</button>
-              <button style={{...btnPrimary,background:"rgba(255,255,255,0.07)",color:"#ccc",border:"2px solid #333",boxShadow:"none"}} onClick={()=>{setScreen("menu");cancelAnimationFrame(rafRef.current);}}>🏠 ГЛАВНОЕ МЕНЮ</button>
-            </div>
+    <div style={{
+      background:"#0a0a18", width:"100vw", height:"100dvh",
+      display:"flex", flexDirection:"column", overflow:"hidden",
+      position:"relative", touchAction:"none", userSelect:"none",
+      fontFamily:"'Oswald',sans-serif",
+    }}>
+      {/* Canvas — растягивается на весь экран */}
+      <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H}
+        style={{position:"absolute",inset:0,width:"100%",height:"100%",display:"block",objectFit:"fill"}}/>
+
+      {/* Кнопка паузы — сверху по центру */}
+      <button
+        onTouchStart={()=>{setScreen("pause");cancelAnimationFrame(rafRef.current);}}
+        onClick={()=>{setScreen("pause");cancelAnimationFrame(rafRef.current);}}
+        style={{
+          position:"absolute",top:10,left:"50%",transform:"translateX(-50%)",
+          background:"rgba(0,0,0,0.5)",border:"1px solid rgba(255,255,255,0.15)",
+          color:"#fff",borderRadius:20,padding:"4px 16px",fontSize:11,
+          letterSpacing:2,cursor:"pointer",zIndex:20,
+        }}>⏸ ПАУЗА</button>
+
+      {/* Мобильное управление — поверх canvas снизу */}
+      <div style={{
+        position:"absolute", bottom:0, left:0, right:0,
+        display:"flex", justifyContent:"space-between", alignItems:"flex-end",
+        padding:"0 12px 16px", zIndex:10, pointerEvents:"none",
+      }}>
+
+        {/* Левый джойстик — движение */}
+        <div style={{pointerEvents:"auto",display:"flex",flexDirection:"column",gap:4,alignItems:"center"}}>
+          {/* Вверх (приседание не нужно на телефоне — вверх просто заглушка) */}
+          <div style={{width:60,height:60}}/>
+          <div style={{display:"flex",gap:4}}>
+            {/* Влево */}
+            <button
+              onTouchStart={e=>{e.preventDefault();keysRef.current.add("a");keysRef.current.delete("d");}}
+              onTouchEnd={e=>{e.preventDefault();keysRef.current.delete("a");}}
+              style={{
+                width:64,height:64,borderRadius:"50%",
+                background:"rgba(255,255,255,0.12)",
+                border:"2px solid rgba(255,255,255,0.25)",
+                color:"#fff",fontSize:24,cursor:"pointer",
+                display:"flex",alignItems:"center",justifyContent:"center",
+                WebkitTapHighlightColor:"transparent",
+              }}>◀</button>
+            {/* Присесть */}
+            <button
+              onTouchStart={e=>{e.preventDefault();keysRef.current.add("s");}}
+              onTouchEnd={e=>{e.preventDefault();keysRef.current.delete("s");}}
+              style={{
+                width:52,height:64,borderRadius:14,
+                background:"rgba(255,255,255,0.08)",
+                border:"2px solid rgba(255,255,255,0.18)",
+                color:"#aaa",fontSize:11,letterSpacing:1,cursor:"pointer",
+                display:"flex",alignItems:"center",justifyContent:"center",
+                WebkitTapHighlightColor:"transparent",fontFamily:"'Oswald',sans-serif",
+                fontWeight:700,
+              }}>↓<br/>СЕС</button>
+            {/* Вправо */}
+            <button
+              onTouchStart={e=>{e.preventDefault();keysRef.current.add("d");keysRef.current.delete("a");}}
+              onTouchEnd={e=>{e.preventDefault();keysRef.current.delete("d");}}
+              style={{
+                width:64,height:64,borderRadius:"50%",
+                background:"rgba(255,255,255,0.12)",
+                border:"2px solid rgba(255,255,255,0.25)",
+                color:"#fff",fontSize:24,cursor:"pointer",
+                display:"flex",alignItems:"center",justifyContent:"center",
+                WebkitTapHighlightColor:"transparent",
+              }}>▶</button>
           </div>
-        )}
-      </div>
-      {/* Mobile controls */}
-      <div style={{display:"flex",gap:16,marginTop:12}}>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,56px)",gridTemplateRows:"56px 56px",gap:4}}>
-          {(["","w","","a","s","d"] as string[]).map((k,i)=>k?(
-            <button key={i} style={{width:56,height:56,borderRadius:10,background:"rgba(255,255,255,0.12)",border:"2px solid rgba(255,255,255,0.18)",color:"#fff",fontFamily:"'Oswald',sans-serif",fontWeight:700,fontSize:18,cursor:"pointer"}}
-              onTouchStart={()=>keysRef.current.add(k)} onTouchEnd={()=>keysRef.current.delete(k)}>
-              {k.toUpperCase()}
-            </button>
-          ):<div key={i} style={{width:56,height:56}}/>)}
         </div>
-        <div style={{display:"flex",flexDirection:"column",gap:4,marginLeft:8}}>
-          <button style={{width:90,height:56,borderRadius:10,background:"rgba(180,28,28,0.7)",border:"2px solid #ef5350",color:"#fff",fontFamily:"'Oswald',sans-serif",fontWeight:700,fontSize:13,cursor:"pointer"}}
-            onTouchStart={()=>{mouseRef.current.down=true;}} onTouchEnd={()=>{mouseRef.current.down=false;}}>🔫 ОГОНЬ</button>
-          <button style={{width:90,height:56,borderRadius:10,background:"rgba(0,100,0,0.7)",border:"2px solid #4CAF50",color:"#fff",fontFamily:"'Oswald',sans-serif",fontWeight:700,fontSize:13,cursor:"pointer"}}
-            onTouchStart={()=>{const state=stateRef.current;if(!state)return;const p=state.player;if(p.ammo<30&&p.reloads>0&&!p.reloading){p.reloading=true;p.reloadProgress=0;p.reloads--;}}}>🔄 RELOAD</button>
+
+        {/* Правый блок — огонь + перезарядка */}
+        <div style={{pointerEvents:"auto",display:"flex",flexDirection:"column",gap:10,alignItems:"flex-end"}}>
+          {/* Перезарядка */}
+          <button
+            onTouchStart={e=>{
+              e.preventDefault();
+              const state=stateRef.current; if(!state) return;
+              const p=state.player;
+              if(p.ammo<30&&p.reloads>0&&!p.reloading){p.reloading=true;p.reloadProgress=0;p.reloads--;}
+            }}
+            style={{
+              width:80,height:52,borderRadius:14,
+              background:"rgba(30,120,30,0.75)",
+              border:"2px solid #4CAF50",
+              color:"#fff",fontSize:13,letterSpacing:1,
+              fontFamily:"'Oswald',sans-serif",fontWeight:700,
+              cursor:"pointer",
+              display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,
+              WebkitTapHighlightColor:"transparent",
+            }}>
+            <span style={{fontSize:18}}>🔄</span>
+            <span>RELOAD</span>
+          </button>
+          {/* Огонь — большая кнопка */}
+          <button
+            onTouchStart={e=>{e.preventDefault();mouseRef.current.down=true;}}
+            onTouchEnd={e=>{e.preventDefault();mouseRef.current.down=false;}}
+            onTouchCancel={e=>{e.preventDefault();mouseRef.current.down=false;}}
+            style={{
+              width:90,height:90,borderRadius:"50%",
+              background:"radial-gradient(circle,rgba(220,30,30,0.9),rgba(140,0,0,0.85))",
+              border:"3px solid #ef5350",
+              color:"#fff",fontSize:16,letterSpacing:2,
+              fontFamily:"'Oswald',sans-serif",fontWeight:900,
+              cursor:"pointer",
+              display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,
+              boxShadow:"0 0 24px rgba(220,30,30,0.5)",
+              WebkitTapHighlightColor:"transparent",
+            }}>
+            <span style={{fontSize:24}}>🔫</span>
+            <span style={{fontSize:13}}>ОГОНЬ</span>
+          </button>
         </div>
       </div>
-      <div style={{color:"#333",fontSize:11,marginTop:6,fontFamily:"'Oswald',sans-serif",letterSpacing:2}}>ESC / P — ПАУЗА</div>
+
+      {/* Пауза оверлей */}
+      {screen==="pause"&&(
+        <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.82)",zIndex:30}}>
+          <div style={{color:"#FFD54F",fontSize:48,fontWeight:900,letterSpacing:8,marginBottom:28,textShadow:"0 0 30px rgba(255,213,79,0.5)"}}>ПАУЗА</div>
+          <div style={{display:"flex",flexDirection:"column",gap:12,width:240}}>
+            <button style={btnPrimary} onClick={resume}>▶ ПРОДОЛЖИТЬ</button>
+            <button style={{...btnPrimary,background:"rgba(255,255,255,0.07)",color:"#ccc",border:"2px solid #333",boxShadow:"none"}} onClick={()=>{setScreen("hat_select");cancelAnimationFrame(rafRef.current);}}>🎩 СМЕНИТЬ ШЛЯПУ</button>
+            <button style={{...btnPrimary,background:"rgba(255,255,255,0.07)",color:"#ccc",border:"2px solid #333",boxShadow:"none"}} onClick={()=>{setScreen("menu");cancelAnimationFrame(rafRef.current);}}>🏠 ГЛАВНОЕ МЕНЮ</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 
