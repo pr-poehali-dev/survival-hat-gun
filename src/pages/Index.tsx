@@ -32,22 +32,24 @@ const DEFAULT_STATS: GameStats = { killed: 0, waves: 0, shots: 0, time: 0, bestW
 type Vec2 = { x: number; y: number };
 
 type Player = {
-  pos: Vec2; vel: Vec2; facing: 1 | -1; crouching: boolean;
+  pos: Vec2; vel: Vec2; velX: number; facing: 1 | -1; crouching: boolean;
   reloading: boolean; reloadProgress: number; ammo: number; reloads: number; maxReloads: number;
   hp: number; maxHp: number; hat: number; invincible: number;
   shootCooldown: number; muzzleFlash: number;
+  reloadAnim: number; // 0..1 — фаза анимации перезарядки
 };
 
-type Bullet = { pos: Vec2; vel: Vec2; life: number; fromPlayer: boolean; };
+type Bullet = { pos: Vec2; vel: Vec2; life: number; maxLife: number; fromPlayer: boolean; trail: Vec2[]; };
 type Enemy = {
   id: number; pos: Vec2; vel: Vec2; hp: number; maxHp: number; facing: 1 | -1;
   state: "run" | "attack" | "dead"; deadTimer: number; shootTimer: number;
   animTimer: number; side: "left" | "right";
 };
-type Particle = { pos: Vec2; vel: Vec2; life: number; maxLife: number; color: string; size: number; };
+type Particle = { pos: Vec2; vel: Vec2; life: number; maxLife: number; color: string; size: number; rotation?: number; rotationSpeed?: number; };
+type Casing = { pos: Vec2; vel: Vec2; life: number; rotation: number; rotSpeed: number; };
 
 type GameState = {
-  player: Player; bullets: Bullet[]; enemies: Enemy[]; particles: Particle[];
+  player: Player; bullets: Bullet[]; enemies: Enemy[]; particles: Particle[]; casings: Casing[];
   wave: number; waveEnemiesLeft: number; waveTimer: number; betweenWaves: boolean;
   score: number; killed: number; totalShots: number; elapsed: number;
   over: boolean; enemyIdCounter: number;
@@ -64,14 +66,14 @@ function createInitialState(hatId: number): GameState {
   return {
     player: {
       pos: { x: CANVAS_W / 2, y: GROUND_Y - PLAYER_H },
-      vel: { x: 0, y: 0 }, facing: 1, crouching: false,
+      vel: { x: 0, y: 0 }, velX: 0, facing: 1, crouching: false,
       reloading: false, reloadProgress: 0, ammo: 30,
       reloads: hat.bonus === "reload" ? 3 : 2,
       maxReloads: hat.bonus === "reload" ? 3 : 2,
       hp: 3 + extraLife, maxHp: 3 + extraLife,
-      hat: hatId, invincible: 0, shootCooldown: 0, muzzleFlash: 0,
+      hat: hatId, invincible: 0, shootCooldown: 0, muzzleFlash: 0, reloadAnim: 0,
     },
-    bullets: [], enemies: [], particles: [],
+    bullets: [], enemies: [], particles: [], casings: [],
     wave: 0, waveEnemiesLeft: 0, waveTimer: 0, betweenWaves: true,
     score: 0, killed: 0, totalShots: 0, elapsed: 0, over: false, enemyIdCounter: 0,
   };
@@ -194,7 +196,10 @@ function drawPlayer(ctx: CanvasRenderingContext2D, p: Player, elapsed: number) {
   ctx.save();
   const bH = p.crouching ? PLAYER_H*0.6 : PLAYER_H;
   const baseY = p.pos.y + bH;
-  const bob = p.crouching ? 0 : Math.sin(elapsed*0.015)*2;
+  // Плавное покачивание тела
+  const isMoving = Math.abs(p.velX) > 0.5;
+  const walkFreq = 0.018;
+  const bob = p.crouching ? 0 : (isMoving ? Math.sin(elapsed*walkFreq)*3 : Math.sin(elapsed*0.008)*1);
   ctx.translate(p.pos.x, baseY+bob);
   ctx.scale(p.facing, 1);
 
@@ -204,13 +209,23 @@ function drawPlayer(ctx: CanvasRenderingContext2D, p: Player, elapsed: number) {
   ctx.beginPath(); ctx.ellipse(0,0,22,12,0,0,Math.PI*2); ctx.fill();
   ctx.restore();
 
-  const wc=Math.sin(elapsed*0.025);
+  // Плавный walk cycle — зависит от реальной скорости
+  const walkPhase = elapsed * walkFreq;
+  const wc = isMoving ? Math.sin(walkPhase) : 0;
 
   if(!p.crouching){
     for(const [tx,sign] of [[-6,-1],[6,1]]){
-      ctx.save(); ctx.translate(tx,-20); ctx.rotate(wc*0.35*sign);
-      ctx.fillStyle=sign===-1?"#3E4B3E":"#4A5A4A";
+      ctx.save(); ctx.translate(tx as number,-20);
+      // Плавная амплитуда ноги
+      const legAmp = isMoving ? 0.38 : 0;
+      ctx.rotate(wc * legAmp * (sign as number));
+      ctx.fillStyle=(sign as number)===-1?"#3E4B3E":"#4A5A4A";
       ctx.fillRect(-5,0,11,26);
+      // Икра
+      ctx.save(); ctx.translate(0,20); ctx.rotate(isMoving?Math.max(0,wc*(sign as number)*0.25):0);
+      ctx.fillStyle=(sign as number)===-1?"#354A35":"#425245";
+      ctx.fillRect(-4,0,9,10);
+      ctx.restore();
       ctx.fillStyle="#1a1a1a"; ctx.fillRect(-6,22,13,8);
       ctx.restore();
     }
@@ -222,6 +237,9 @@ function drawPlayer(ctx: CanvasRenderingContext2D, p: Player, elapsed: number) {
   }
 
   const ty = p.crouching ? -bH+14 : -bH+20;
+  // Лёгкий наклон тела при движении
+  const bodyTilt = isMoving ? wc * 0.04 : 0;
+  ctx.save(); ctx.rotate(bodyTilt);
   ctx.fillStyle="#4A5E4A";
   ctx.fillRect(-14,ty,28,bH-30);
   ctx.fillStyle="#2d3a2d";
@@ -229,13 +247,79 @@ function drawPlayer(ctx: CanvasRenderingContext2D, p: Player, elapsed: number) {
   ctx.fillStyle="#2b1d0e"; ctx.fillRect(-14,ty+bH-36,28,6);
   ctx.fillStyle="#888"; ctx.fillRect(-4,ty+bH-36,8,6);
 
-  const as=p.crouching?0:wc*0.2;
-  for(const [tx,sign] of [[-12,-1],[12,1]]){
-    ctx.save(); ctx.translate(tx,ty+8); ctx.rotate(-as*sign);
+  // Руки
+  const armSwing = isMoving ? wc*0.22 : 0;
+
+  // Задняя рука
+  ctx.save(); ctx.translate(-12,ty+8); ctx.rotate(-armSwing);
+  ctx.fillStyle="#4A5E4A"; ctx.fillRect(-4,0,9,18);
+  ctx.fillStyle="#c68642"; ctx.fillRect(-4,16,9,8);
+  ctx.restore();
+
+  // Передняя рука — при перезарядке уходит вниз за магазином
+  if(p.reloading && p.reloadAnim > 0) {
+    const ra = p.reloadAnim;
+    // Фаза 0-0.3: рука идёт вниз к поясу
+    // Фаза 0.3-0.6: тянет магазин из-за пояса (вверх)
+    // Фаза 0.6-0.9: вставляет в автомат
+    // Фаза 0.9-1: рука возвращается
+    let armY = ty+8;
+    let magOffsetY = 0;
+    let showMag = false;
+    let magAlpha = 1;
+
+    if(ra < 0.3){
+      // Рука тянется вниз к поясу
+      const t = ra/0.3;
+      armY = ty+8 + t*25;
+      ctx.save(); ctx.translate(12, armY); ctx.rotate(armSwing + t*0.8);
+      ctx.fillStyle="#4A5E4A"; ctx.fillRect(-4,0,9,18);
+      ctx.fillStyle="#c68642"; ctx.fillRect(-4,16,9,8);
+      ctx.restore();
+    } else if(ra < 0.6){
+      // Тащит магазин из-за пояса
+      const t=(ra-0.3)/0.3;
+      armY = ty+8 + (1-t)*25;
+      showMag=true; magOffsetY=(1-t)*20; magAlpha=t;
+      ctx.save(); ctx.translate(12,armY); ctx.rotate(armSwing+0.5*(1-t));
+      ctx.fillStyle="#4A5E4A"; ctx.fillRect(-4,0,9,18);
+      ctx.fillStyle="#c68642"; ctx.fillRect(-4,16,9,8);
+      ctx.restore();
+      // Магазин в руке
+      ctx.save(); ctx.translate(12,armY+14+magOffsetY); ctx.globalAlpha=magAlpha;
+      ctx.fillStyle="#2a2a2a";
+      ctx.save(); ctx.rotate(0.15); ctx.fillRect(-3,0,7,16); ctx.restore();
+      ctx.globalAlpha=1; ctx.restore();
+    } else if(ra < 0.9){
+      // Вставляет магазин в автомат
+      const t=(ra-0.6)/0.3;
+      armY = ty+8;
+      showMag=true; magOffsetY=-(t*18); magAlpha=1;
+      ctx.save(); ctx.translate(12,armY); ctx.rotate(armSwing - t*0.3);
+      ctx.fillStyle="#4A5E4A"; ctx.fillRect(-4,0,9,18);
+      ctx.fillStyle="#c68642"; ctx.fillRect(-4,16,9,8);
+      ctx.restore();
+      // Магазин летит к автомату
+      ctx.save(); ctx.translate(14+t*2, ty+24+magOffsetY);
+      ctx.fillStyle="#2a2a2a";
+      ctx.save(); ctx.rotate(0.1+t*0.05); ctx.fillRect(-3,0,7,16); ctx.restore();
+      ctx.restore();
+    } else {
+      // Рука возвращается
+      const t=(ra-0.9)/0.1;
+      ctx.save(); ctx.translate(12,armY); ctx.rotate(armSwing*(1-t)*0.2);
+      ctx.fillStyle="#4A5E4A"; ctx.fillRect(-4,0,9,18);
+      ctx.fillStyle="#c68642"; ctx.fillRect(-4,16,9,8);
+      ctx.restore();
+    }
+    void showMag; void magOffsetY; void magAlpha;
+  } else {
+    ctx.save(); ctx.translate(12,ty+8); ctx.rotate(armSwing);
     ctx.fillStyle="#4A5E4A"; ctx.fillRect(-4,0,9,18);
     ctx.fillStyle="#c68642"; ctx.fillRect(-4,16,9,8);
     ctx.restore();
   }
+  ctx.restore(); // bodyTilt
 
   const hy=ty-26;
   ctx.fillStyle="#c68642"; ctx.fillRect(-5,ty-4,10,6);
@@ -283,26 +367,39 @@ function drawPlayer(ctx: CanvasRenderingContext2D, p: Player, elapsed: number) {
     ctx.strokeRect(-14,hy,28,10);
   }
 
-  // AK-47
+  // AK-47 — слегка качается при ходьбе
   ctx.save();
-  ctx.translate(14, ty+10);
-  ctx.rotate(p.crouching?0.15:0.1);
+  const gunBob = isMoving ? Math.sin(elapsed*walkFreq*2)*1.5 : 0;
+  ctx.translate(14, ty+10+gunBob);
+  ctx.rotate((p.crouching?0.18:0.1) + (isMoving?wc*0.025:0));
   ctx.fillStyle="#5C3A1E"; ctx.fillRect(-2,4,6,16);
   ctx.fillStyle="#2a2a2a"; ctx.fillRect(-2,-2,22,9);
   ctx.fillStyle="#1a1a1a"; ctx.fillRect(18,1,20,5);
-  ctx.fillStyle="#333";
-  ctx.save(); ctx.translate(8,7); ctx.rotate(0.1);
-  ctx.fillRect(-3,0,7,14); ctx.restore();
+  // Магазин — скрыт при вставке (фаза 0.6-0.9 перезарядки)
+  const hideMag = p.reloading && p.reloadAnim>0.3 && p.reloadAnim<0.9;
+  if(!hideMag){
+    ctx.fillStyle="#333";
+    ctx.save(); ctx.translate(8,7); ctx.rotate(0.1);
+    ctx.fillRect(-3,0,7,14); ctx.restore();
+  }
   ctx.fillStyle="#3a3a3a"; ctx.fillRect(2,-6,16,4);
   ctx.fillStyle="#444"; ctx.fillRect(34,-4,3,5);
   if(p.muzzleFlash>0){
-    const a=p.muzzleFlash/6;
+    const a=p.muzzleFlash/8;
     ctx.save();
-    ctx.shadowColor="#ffaa00"; ctx.shadowBlur=20*a;
-    ctx.fillStyle=`rgba(255,200,50,${a})`;
-    ctx.beginPath(); ctx.ellipse(44,3,14*a,8*a,0,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle=`rgba(255,255,200,${a*0.8})`;
-    ctx.beginPath(); ctx.ellipse(44,3,6*a,4*a,0,0,Math.PI*2); ctx.fill();
+    ctx.shadowColor="#ffaa00"; ctx.shadowBlur=24*a;
+    // Основная вспышка
+    ctx.fillStyle=`rgba(255,220,80,${a})`;
+    ctx.beginPath(); ctx.ellipse(46,3,16*a,9*a,0,0,Math.PI*2); ctx.fill();
+    // Яркое ядро
+    ctx.fillStyle=`rgba(255,255,240,${a})`;
+    ctx.beginPath(); ctx.ellipse(46,3,7*a,4*a,0,0,Math.PI*2); ctx.fill();
+    // Лепестки пламени
+    for(let fi=0;fi<3;fi++){
+      const fa=fi*(Math.PI*2/3);
+      ctx.fillStyle=`rgba(255,160,0,${a*0.6})`;
+      ctx.beginPath(); ctx.ellipse(46+Math.cos(fa)*8*a,3+Math.sin(fa)*6*a,5*a,3*a,fa,0,Math.PI*2); ctx.fill();
+    }
     ctx.restore();
   }
   ctx.restore();
@@ -317,16 +414,30 @@ function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, elapsed: number) {
     ctx.globalAlpha=Math.max(0,e.deadTimer/60);
     ctx.rotate(1.4);
   }
-  const wc=Math.sin(elapsed*0.02+e.id);
+  // Плавный run цикл — враги разные по фазе через e.id
+  const isRunning = e.state==="run";
+  const runFreq = 0.022 + (e.id%3)*0.004;
+  const wc = isRunning ? Math.sin(elapsed*runFreq + e.id*1.3) : 0;
+  // Лёгкое покачивание при атаке
+  const attackBob = e.state==="attack" ? Math.sin(elapsed*0.01+e.id)*1.5 : 0;
+
   ctx.save(); ctx.scale(1,0.2);
   ctx.fillStyle="rgba(0,0,0,0.3)";
   ctx.beginPath(); ctx.ellipse(0,0,18,8,0,0,Math.PI*2); ctx.fill();
   ctx.restore();
+
   if(e.state!=="dead"){
     for(const [tx,sign] of [[-5,-1],[5,1]]){
-      ctx.save(); ctx.translate(tx,-18); ctx.rotate(wc*0.4*sign);
-      ctx.fillStyle=sign===-1?"#1a1a1a":"#222";
+      ctx.save(); ctx.translate(tx as number,-18+attackBob);
+      const legAmp = isRunning ? 0.42 : 0;
+      ctx.rotate(wc * legAmp * (sign as number));
+      ctx.fillStyle=(sign as number)===-1?"#1a1a1a":"#222";
       ctx.fillRect(-4,0,9,22);
+      // Икра с плавным изгибом
+      ctx.save(); ctx.translate(0,18);
+      ctx.rotate(isRunning?Math.max(0,wc*(sign as number)*0.3):0);
+      ctx.fillStyle="#111"; ctx.fillRect(-3,0,8,8);
+      ctx.restore();
       ctx.fillStyle="#0d0d0d"; ctx.fillRect(-5,19,11,7);
       ctx.restore();
     }
@@ -334,22 +445,41 @@ function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, elapsed: number) {
     ctx.fillStyle="#1a1a1a";
     ctx.fillRect(-14,-12,12,14); ctx.fillRect(2,-12,12,14);
   }
-  ctx.fillStyle="#1a1a1a"; ctx.fillRect(-13,-50,26,32);
+
+  // Тело с наклоном при беге
+  const bodyTilt = isRunning ? wc*0.05 : 0;
+  ctx.save(); ctx.rotate(bodyTilt);
+  ctx.fillStyle="#1a1a1a"; ctx.fillRect(-13,-50+attackBob,26,32);
   ctx.strokeStyle="#333"; ctx.lineWidth=2;
-  ctx.beginPath(); ctx.moveTo(-13,-40); ctx.lineTo(13,-40);
-  ctx.moveTo(-13,-30); ctx.lineTo(13,-30); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-13,-40+attackBob); ctx.lineTo(13,-40+attackBob);
+  ctx.moveTo(-13,-30+attackBob); ctx.lineTo(13,-30+attackBob); ctx.stroke();
+
+  // Руки с замахом
+  const armSwing = isRunning ? wc*0.28 : 0;
+  for(const [tx,sign] of [[-10,-1],[10,1]]){
+    ctx.save(); ctx.translate(tx as number,-44+attackBob);
+    ctx.rotate(-armSwing*(sign as number) + (e.state==="attack"?(sign as number)*0.4:0));
+    ctx.fillStyle="#1a1a1a"; ctx.fillRect(-3,0,7,16);
+    ctx.fillStyle="#c0773a"; ctx.fillRect(-3,14,7,7);
+    ctx.restore();
+  }
+  ctx.restore();
+
   ctx.fillStyle="#c0773a";
-  ctx.beginPath(); ctx.roundRect(-11,-70,22,22,4); ctx.fill();
-  ctx.fillStyle="#8B0000"; ctx.fillRect(-11,-60,22,10);
+  ctx.beginPath(); ctx.roundRect(-11,-70+attackBob,22,22,4); ctx.fill();
+  ctx.fillStyle="#8B0000"; ctx.fillRect(-11,-60+attackBob,22,10);
   ctx.fillStyle="#ff3300";
-  ctx.fillRect(-7,-66,5,4); ctx.fillRect(2,-66,5,4);
+  ctx.fillRect(-7,-66+attackBob,5,4); ctx.fillRect(2,-66+attackBob,5,4);
   ctx.fillStyle="#111";
-  ctx.beginPath(); ctx.ellipse(0,-70,12,7,0,Math.PI,0); ctx.fill();
-  ctx.fillRect(-12,-72,24,5);
-  ctx.save(); ctx.translate(12,-44); ctx.rotate(e.state==="attack"?-0.5:0.2);
+  ctx.beginPath(); ctx.ellipse(0,-70+attackBob,12,7,0,Math.PI,0); ctx.fill();
+  ctx.fillRect(-12,-72+attackBob,24,5);
+
+  // Нож / оружие
+  ctx.save(); ctx.translate(12,-44+attackBob); ctx.rotate(e.state==="attack"?-0.6+Math.sin(elapsed*0.025)*0.2:0.2);
   ctx.fillStyle="#888"; ctx.fillRect(0,-2,18,4);
   ctx.fillStyle="#555"; ctx.fillRect(-4,-3,6,8);
   ctx.restore();
+
   if(e.state!=="dead"){
     ctx.fillStyle="rgba(0,0,0,0.6)";
     ctx.fillRect(-18,-84,36,6);
@@ -450,6 +580,7 @@ export default function Index() {
   const lastTRef = useRef<number>(0);
   const elRef = useRef<number>(0);
   const screenRef = useRef<Screen>("menu");
+  const lastTapRef = useRef<number>(0); // для двойного тапа
   screenRef.current = screen;
 
   const addParticles = useCallback((state: GameState, x: number, y: number, color: string, n: number) => {
@@ -478,17 +609,21 @@ export default function Index() {
     const el=elRef.current;
     state.elapsed+=dt/1000;
 
-    p.vel.x=0;
-    if(keys.has("a")||keys.has("arrowleft")){p.vel.x=-spd;p.facing=-1;}
-    if(keys.has("d")||keys.has("arrowright")){p.vel.x=spd;p.facing=1;}
+    // Плавное ускорение/торможение
+    let targetVX = 0;
+    if(keys.has("a")||keys.has("arrowleft")){targetVX=-spd;p.facing=-1;}
+    if(keys.has("d")||keys.has("arrowright")){targetVX=spd;p.facing=1;}
     p.crouching=keys.has("s")||keys.has("arrowdown");
+    const accel = 0.35;
+    p.velX += (targetVX - p.velX) * accel;
+    if(Math.abs(p.velX)<0.1) p.velX=0;
 
     const rect=canvas.getBoundingClientRect();
     const mx=(mouse.x-rect.left)*(CANVAS_W/rect.width);
     if(mx>p.pos.x+10) p.facing=1;
     else if(mx<p.pos.x-10) p.facing=-1;
 
-    p.pos.x=Math.max(20,Math.min(CANVAS_W-20,p.pos.x+p.vel.x));
+    p.pos.x=Math.max(20,Math.min(CANVAS_W-20,p.pos.x+p.velX));
     p.pos.y=GROUND_Y-(p.crouching?PLAYER_H*0.6:PLAYER_H);
 
     if(p.muzzleFlash>0) p.muzzleFlash--;
@@ -497,25 +632,56 @@ export default function Index() {
 
     if(mouse.down&&!p.reloading&&p.ammo>0&&p.shootCooldown<=0){
       p.ammo--;
-      p.shootCooldown=hat.bonus==="damage"?6:8;
-      p.muzzleFlash=6;
+      p.shootCooldown=hat.bonus==="damage"?5:7;
+      p.muzzleFlash=8;
       state.totalShots++;
-      const gx=p.pos.x+p.facing*50;
-      const gy=p.pos.y+(p.crouching?PLAYER_H*0.3:PLAYER_H*0.4);
+      const gx=p.pos.x+p.facing*52;
+      const gy=p.pos.y+(p.crouching?PLAYER_H*0.28:PLAYER_H*0.38);
       const ang=p.facing===1?0:Math.PI;
-      const sp=(Math.random()-0.5)*0.12;
-      state.bullets.push({pos:{x:gx,y:gy},vel:{x:Math.cos(ang+sp)*14,y:Math.sin(ang+sp)*14},life:40,fromPlayer:true});
-      addParticles(state,gx,gy,"#FFD54F",4);
+      const sp=(Math.random()-0.5)*0.08;
+      const bspd=18;
+      state.bullets.push({
+        pos:{x:gx,y:gy},
+        vel:{x:Math.cos(ang+sp)*bspd,y:Math.sin(ang+sp)*bspd-0.5},
+        life:35,maxLife:35,fromPlayer:true,trail:[],
+      });
+      // Гильза вылетает вбок-вверх
+      state.casings.push({
+        pos:{x:p.pos.x+p.facing*20,y:gy-5},
+        vel:{x:p.facing*(-2-Math.random()*2), y:-(3+Math.random()*3)},
+        life:80,rotation:Math.random()*Math.PI*2,rotSpeed:(Math.random()-0.5)*0.4,
+      });
+      // Дым от выстрела
+      addParticles(state,gx,gy,"rgba(180,140,80,0.6)",2);
     }
 
     if(p.reloading){
-      p.reloadProgress+=hat.bonus==="reload"?0.025:0.015;
-      if(p.reloadProgress>=1){p.ammo=30;p.reloading=false;p.reloadProgress=0;}
+      const reloadSpd = hat.bonus==="reload"?0.025:0.015;
+      p.reloadProgress+=reloadSpd;
+      p.reloadAnim = p.reloadProgress;
+      if(p.reloadProgress>=1){p.ammo=30;p.reloading=false;p.reloadProgress=0;p.reloadAnim=0;}
+    }
+
+    // Гильзы
+    for(let i=state.casings.length-1;i>=0;i--){
+      const c=state.casings[i];
+      c.pos.x+=c.vel.x; c.pos.y+=c.vel.y;
+      c.vel.y+=0.35; // гравитация
+      if(c.pos.y>GROUND_Y+10) { c.vel.y*=-0.3; c.vel.x*=0.7; c.pos.y=GROUND_Y+10; }
+      c.rotation+=c.rotSpeed;
+      c.life--;
+      if(c.life<=0) state.casings.splice(i,1);
     }
 
     for(let i=state.bullets.length-1;i>=0;i--){
       const b=state.bullets[i];
-      b.pos.x+=b.vel.x; b.pos.y+=b.vel.y; b.life--;
+      // Сохраняем трейл
+      b.trail.push({x:b.pos.x,y:b.pos.y});
+      if(b.trail.length>8) b.trail.shift();
+      b.pos.x+=b.vel.x; b.pos.y+=b.vel.y;
+      // Гравитация для пуль противника
+      if(!b.fromPlayer) b.vel.y+=0.05;
+      b.life--;
       if(b.life<=0||b.pos.x<-20||b.pos.x>CANVAS_W+20){state.bullets.splice(i,1);continue;}
       if(b.fromPlayer){
         for(let j=state.enemies.length-1;j>=0;j--){
@@ -583,7 +749,7 @@ export default function Index() {
         if(e.shootTimer<=0){
           e.shootTimer=Math.max(60,120-state.wave*5);
           const ba=dx>0?0:Math.PI;
-          state.bullets.push({pos:{x:e.pos.x,y:e.pos.y+20},vel:{x:Math.cos(ba)*6,y:0},life:80,fromPlayer:false});
+          state.bullets.push({pos:{x:e.pos.x,y:e.pos.y+20},vel:{x:Math.cos(ba)*6,y:0},life:80,maxLife:80,fromPlayer:false,trail:[]});
         }
       }
       e.pos.y=GROUND_Y-55;
@@ -606,19 +772,66 @@ export default function Index() {
 
     ctx.clearRect(0,0,CANVAS_W,CANVAS_H);
     drawBg(ctx,el);
+
+    // Гильзы
+    for(const c of state.casings){
+      ctx.save();
+      ctx.translate(c.pos.x,c.pos.y); ctx.rotate(c.rotation);
+      ctx.globalAlpha=Math.min(1,c.life/20);
+      ctx.fillStyle="#c8a040";
+      ctx.fillRect(-3,-1.5,7,3);
+      ctx.fillStyle="#a07030";
+      ctx.fillRect(-3,-1.5,2,3);
+      ctx.restore();
+    }
+    ctx.globalAlpha=1;
+
+    // Частицы
     for(const pt of state.particles){
       ctx.globalAlpha=pt.life/pt.maxLife;
       ctx.fillStyle=pt.color;
       ctx.beginPath(); ctx.arc(pt.pos.x,pt.pos.y,pt.size*(pt.life/pt.maxLife),0,Math.PI*2); ctx.fill();
     }
     ctx.globalAlpha=1;
+
+    // Пули — реалистичный трассер
     for(const b of state.bullets){
       ctx.save();
-      ctx.fillStyle=b.fromPlayer?"#FFD54F":"#ff4444";
-      ctx.shadowColor=b.fromPlayer?"#FFD54F":"#ff0000"; ctx.shadowBlur=8;
-      ctx.beginPath(); ctx.arc(b.pos.x,b.pos.y,b.fromPlayer?3:4,0,Math.PI*2); ctx.fill();
+      // Хвост-трассер
+      if(b.trail.length>1){
+        const grad=ctx.createLinearGradient(b.trail[0].x,b.trail[0].y,b.pos.x,b.pos.y);
+        if(b.fromPlayer){
+          grad.addColorStop(0,"rgba(255,200,0,0)");
+          grad.addColorStop(0.4,"rgba(255,220,80,0.15)");
+          grad.addColorStop(1,"rgba(255,240,150,0.7)");
+        } else {
+          grad.addColorStop(0,"rgba(255,60,0,0)");
+          grad.addColorStop(1,"rgba(255,80,50,0.6)");
+        }
+        ctx.strokeStyle=grad;
+        ctx.lineWidth=b.fromPlayer?2:2.5;
+        ctx.beginPath();
+        ctx.moveTo(b.trail[0].x,b.trail[0].y);
+        for(const pt of b.trail.slice(1)) ctx.lineTo(pt.x,pt.y);
+        ctx.lineTo(b.pos.x,b.pos.y);
+        ctx.stroke();
+      }
+      // Головка пули
+      ctx.shadowColor=b.fromPlayer?"#ffe060":"#ff4400";
+      ctx.shadowBlur=b.fromPlayer?10:8;
+      ctx.fillStyle=b.fromPlayer?"#fff5c0":"#ff6644";
+      ctx.beginPath();
+      ctx.arc(b.pos.x,b.pos.y,b.fromPlayer?2.5:3,0,Math.PI*2);
+      ctx.fill();
+      // Яркое ядро
+      ctx.shadowBlur=0;
+      ctx.fillStyle=b.fromPlayer?"#ffffff":"#ffaa80";
+      ctx.beginPath();
+      ctx.arc(b.pos.x,b.pos.y,b.fromPlayer?1:1.5,0,Math.PI*2);
+      ctx.fill();
       ctx.restore();
     }
+
     drawPlayer(ctx,p,el);
     for(const e of state.enemies) drawEnemy(ctx,e,el);
     drawHUD(ctx,state);
@@ -650,7 +863,7 @@ export default function Index() {
       if(k==="r"){
         const state=stateRef.current; if(!state) return;
         const p=state.player;
-        if(p.ammo<30&&p.reloads>0&&!p.reloading){p.reloading=true;p.reloadProgress=0;p.reloads--;}
+        if(p.ammo<30&&p.reloads>0&&!p.reloading){p.reloading=true;p.reloadProgress=0;p.reloadAnim=0;p.reloads--;}
       }
       if(k==="escape"||k==="p"){setScreen("pause");cancelAnimationFrame(rafRef.current);}
     };
@@ -665,7 +878,19 @@ export default function Index() {
     const mm=(e:MouseEvent)=>{mouseRef.current.x=e.clientX;mouseRef.current.y=e.clientY;};
     const md=(e:MouseEvent)=>{if(e.button===0)mouseRef.current.down=true;};
     const mu=(e:MouseEvent)=>{if(e.button===0)mouseRef.current.down=false;};
-    const tp=(e:TouchEvent)=>e.preventDefault();
+    const tp=(e:TouchEvent)=>{
+      e.preventDefault();
+      // Двойной тап = перезарядка
+      const now=Date.now();
+      if(now-lastTapRef.current<300){
+        const state=stateRef.current; if(!state) return;
+        const p=state.player;
+        if(p.ammo<30&&p.reloads>0&&!p.reloading){
+          p.reloading=true;p.reloadProgress=0;p.reloadAnim=0;p.reloads--;
+        }
+      }
+      lastTapRef.current=now;
+    };
     canvas.addEventListener("mousemove",mm); canvas.addEventListener("mousedown",md); canvas.addEventListener("mouseup",mu);
     canvas.addEventListener("touchstart",tp,{passive:false});
     canvas.addEventListener("touchmove",tp,{passive:false});
@@ -779,6 +1004,13 @@ export default function Index() {
           letterSpacing:2,cursor:"pointer",zIndex:20,
         }}>⏸ ПАУЗА</button>
 
+      {/* Подсказка двойного тапа */}
+      <div style={{
+        position:"absolute",bottom:140,left:"50%",transform:"translateX(-50%)",
+        color:"rgba(255,255,255,0.25)",fontSize:10,letterSpacing:1,
+        fontFamily:"'Oswald',sans-serif",pointerEvents:"none",whiteSpace:"nowrap",
+      }}>2× тап по экрану = перезарядка</div>
+
       {/* Мобильное управление — поверх canvas снизу */}
       <div style={{
         position:"absolute", bottom:0, left:0, right:0,
@@ -839,7 +1071,7 @@ export default function Index() {
               e.preventDefault();
               const state=stateRef.current; if(!state) return;
               const p=state.player;
-              if(p.ammo<30&&p.reloads>0&&!p.reloading){p.reloading=true;p.reloadProgress=0;p.reloads--;}
+              if(p.ammo<30&&p.reloads>0&&!p.reloading){p.reloading=true;p.reloadProgress=0;p.reloadAnim=0;p.reloads--;}
             }}
             style={{
               width:80,height:52,borderRadius:14,
