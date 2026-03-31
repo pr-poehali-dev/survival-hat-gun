@@ -770,7 +770,7 @@ export default function Index() {
       {/* Mobile controls */}
       <div style={{display:"flex",gap:16,marginTop:12}}>
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,56px)",gridTemplateRows:"56px 56px",gap:4}}>
-          {[["",["w"],""],["a","s","d"]].flat().map((k,i)=>k?(
+          {(["","w","","a","s","d"] as string[]).map((k,i)=>k?(
             <button key={i} style={{width:56,height:56,borderRadius:10,background:"rgba(255,255,255,0.12)",border:"2px solid rgba(255,255,255,0.18)",color:"#fff",fontFamily:"'Oswald',sans-serif",fontWeight:700,fontSize:18,cursor:"pointer"}}
               onTouchStart={()=>keysRef.current.add(k)} onTouchEnd={()=>keysRef.current.delete(k)}>
               {k.toUpperCase()}
